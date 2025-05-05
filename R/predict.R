@@ -1,7 +1,24 @@
-predict_aft_semipar <- function(model, newdata, tau = NA) {
+predict_aft_semipar <- function(model, newdata, tau = NA, data, trunc_type = "left") {
   if (class(model) == "lm") {
     exp_resid <- exp(model$residuals)
-    exp_resid_surv <- survival::survfit(Surv(exp_resid) ~ 1, se.fit=F)
+    N <- length(model$residuals)
+    if (trunc_type == "left") {
+      exp_resid_L <- exp(log(data$L)- model$fitted.values)
+      exp_resid_surv <- survfit(Surv(exp_resid_L, exp_resid, rep(1, N)) ~ 1, se.fit=F)
+    } else if (trunc_type == "right") {
+      exp_resid_R <- exp(log(data$R)- model$fitted.values)
+      exp_resid_surv <- survfit(Surv(-exp_resid_R, -exp_resid, rep(1, N)) ~ 1, se.fit=F)
+      exp_resid_surv$time <- rev(-exp_resid_surv$time)
+      exp_resid_surv$surv <- rev(1-exp_resid_surv$surv)
+    } else if (trunc_type == "double") {
+      exp_resid_L <- exp(log(data$L)- model$fitted.values)
+      exp_resid_R <- exp(log(data$R)- model$fitted.values)
+      NPMLE_fit <- cdfDT(exp_resid, exp_resid_L, exp_resid_R, display=F)
+      exp_resid_surv <- list(
+        time = NPMLE_fit$time,
+        surv = NPMLE_fit$Survival
+      )
+    }
     if (!is.na(tau)) { # RMST
       exp_nlp <- exp(-predict(model, newdata))
       tau2 <- tau * exp_nlp
@@ -21,9 +38,18 @@ predict_aft_semipar <- function(model, newdata, tau = NA) {
   } else if (class(model) == "aftgee") {
     linpred <- cbind(1, model$data$x) %*% model$coefficients[,2]
 
-    time <- model$data$y * exp(-linpred)
+    #time <- model$data$y * exp(-linpred)
+    #delta <- model$data$d
+    #exp_resid_surv <- survfit(Surv(time, delta) ~ 1, se.fit=F)
+
+    exp_resid <- model$data$y * exp(-linpred)
+    N <- length(model$data$y)
     delta <- model$data$d
-    exp_resid_surv <- survival::survfit(Surv(time, delta) ~ 1, se.fit=F)
+    if (trunc_type == "left") {
+      exp_resid_L <- exp(log(data$L)- linpred)
+      exp_resid_surv <- survfit(Surv(exp_resid_L, exp_resid, delta) ~ 1, se.fit=F)
+    }
+
     if (!is.na(tau)) { # RMST
       varnames <- dimnames(model$coefficients)[[1]][-1]
       Xmat <- as.matrix(newdata[,varnames,drop=F])
