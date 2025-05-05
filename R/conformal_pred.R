@@ -7,8 +7,9 @@
 #' @param Z vector of variable names for covariates
 #' @param L variable name for left truncation time
 #' @param R variable name for right truncation time
+#' @param Rp variable name for sequential truncation time
 #' @param delta variable name for event indicator
-#' @param trunc_type truncation type: left, right, or double
+#' @param trunc_type truncation type: left, right, double, or seq
 #' @param cencoring censoring type: right
 #' @param target MST or RMST
 #' @param tau used when targeting for RMST
@@ -56,7 +57,7 @@
 #'print(paste0("The coverage rate is ",coverage*100,"%."))
 #'
 conformal_pred <- function(data_tr, data_ca, data_te,
-                           X = "X", Z = "Z", L = "L", R = "R", delta = "delta",
+                           X = "X", Z = "Z", L = "L", R = "R", Rp, delta = "delta",
                            trunc_type = "left", cencoring = "right",
                            target = "RMST", tau = NA, model = "cox",
                            lin_pred = FALSE, alpha = 0.1) {
@@ -216,15 +217,15 @@ conformal_pred <- function(data_tr, data_ca, data_te,
   }
   else if (trunc_type == "seq") {
     if (model == "cox") {
-      model_PO <- seqTrun.modPOreg.cox(data.frame(L=data_tr$X, X=data_tr$R,
-                                                  R=data_tr$RR, Z=data_tr$Z1))
+      model_PO <- seqTrun.modPOreg.cox(data.frame(L=data_tr[[X]], X=data_tr[[R]],
+                                                  R=data_tr[[Rp]], Z=data_tr[[Z]]))
       model_PO_coef <- model_PO$`Coefficient estimate`
       Zbhat <- cbind(as.matrix(data_te[,Z])) %*% model_PO_coef
       mu_hat_tau_n1 <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_ca)
       pred_data_te_mu <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_te)
     } else if (model == "aft") {
-      model_PO <- seqTrun.modPOreg.aft(data.frame(L=data_tr$X, X=data_tr$R,
-                                                  R=data_tr$RR, Z=data_tr$Z1))
+      model_PO <- seqTrun.modPOreg.aft(data.frame(L=data_tr[[X]], X=data_tr[[R]],
+                                                  R=data_tr[[Rp]], Z=data_tr[[Z]]))
       model_PO_coef <- model_PO$mean[, 1]
       Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model_PO_coef
       mu_hat_tau_n1 <- predict.aft.semipar.seqTrun(model_PO, data_tr, newdata = data_ca)

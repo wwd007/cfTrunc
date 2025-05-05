@@ -12,6 +12,7 @@ conformal_pred(
   Z = "Z",
   L = "L",
   R = "R",
+  Rp,
   delta = "delta",
   trunc_type = "left",
   cencoring = "right",
@@ -37,9 +38,11 @@ conformal_pred(
 
 \item{R}{variable name for right truncation time}
 
+\item{Rp}{variable name for sequential truncation time}
+
 \item{delta}{variable name for event indicator}
 
-\item{trunc_type}{truncation type: left, right, or double}
+\item{trunc_type}{truncation type: left, right, double, or seq}
 
 \item{cencoring}{censoring type: right}
 
