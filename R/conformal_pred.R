@@ -214,7 +214,41 @@ conformal_pred <- function(data_tr, data_ca, data_te,
     model.n2.NPMLE <- cdfDT(y=data_ca[[X]], l=data_ca[[L]], r=data_ca[[R]], display=F)
     w <- 1/model.n2.NPMLE$P.K
   }
+  else if (trunc_type == "seq") {
+    if (model == "cox") {
+      model_PO <- seqTrun.modPOreg.cox(data.frame(L=data_tr$X, X=data_tr$R,
+                                                  R=data_tr$RR, Z=data_tr$Z1))
+      model_PO_coef <- model_PO$`Coefficient estimate`
+      Zbhat <- cbind(as.matrix(data_te[,Z])) %*% model_PO_coef
+      mu_hat_tau_n1 <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_ca)
+      pred_data_te_mu <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_te)
+    } else if (model == "aft") {
+      model_PO <- seqTrun.modPOreg.aft(data.frame(L=data_tr$X, X=data_tr$R,
+                                                  R=data_tr$RR, Z=data_tr$Z1))
+      model_PO_coef <- model_PO$mean[, 1]
+      Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model_PO_coef
+      mu_hat_tau_n1 <- predict.aft.semipar.seqTrun(model_PO, data_tr, newdata = data_ca)
+      pred_data_te_mu <- predict.aft.semipar.seqTrun(model_PO, data_tr, newdata = data_te)
+    }
 
+    ## weighting ===========================
+    model.trunc.fit <- survfit(Surv(data_tr[["R"]], data_tr[["RR"]], rep(1, nrow(data_tr)))~1)
+    trunc_time <- rev(model.trunc.fit$time)
+    trunc_prob <- c(1-rev(model.trunc.fit$surv), 0)
+    t <- data_ca[["R"]]
+    G_hat <- rep(NA, length(t))
+    for (i in 1:length(t)) {
+      temp_ind <- which(trunc_time>t[i])
+      if (length(temp_ind)==0) {
+        G_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
+      } else {
+        G_hat[i] <- trunc_prob[max(temp_ind)+1]
+        if(G_hat[i]==1) G_hat[i]<-0.999
+      }
+    }
+    w <- 1/(1-G_hat) ## 1/Pr(R>x)
+
+  }
   if (target == "RMST") {
     R_star <- pmin(data_ca[[X]], tau)-mu_hat_tau_n1
   } else {
