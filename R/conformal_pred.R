@@ -251,13 +251,13 @@ conformal_pred <- function(data_tr, data_ca, data_te,
 
   }
   if (target == "RMST") {
-    R_star <- pmin(data_ca[[X]], tau)-mu_hat_tau_n1
+    Re_star <- pmin(data_ca[[X]], tau)-mu_hat_tau_n1
   } else {
-    R_star <- data_ca[[X]]-mu_hat_tau_n1
+    Re_star <- data_ca[[X]]-mu_hat_tau_n1
   }
-  w_order_std <- w[order(R_star)] / sum(w)
+  w_order_std <- w[order(Re_star)] / sum(w)
   ind <- which.max(cumsum(w_order_std) >= 1 - alpha)
-  q_star <- sort(R_star)[ind]
+  q_star <- sort(Re_star)[ind]
 
   if (target == "RMST") {
     pred_data_te <- data.frame(y_pred = pred_data_te_mu)
