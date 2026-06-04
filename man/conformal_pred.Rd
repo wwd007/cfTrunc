@@ -12,87 +12,108 @@ conformal_pred(
   Z = "Z",
   L = "L",
   R = "R",
-  Rp,
+  Rp = "Rp",
   delta = "delta",
   trunc_type = "left",
-  cencoring = "right",
+  censoring = "right",
   target = "RMST",
-  tau = NA,
-  model = "cox",
-  lin_pred = FALSE,
+  tau = NA_real_,
+  outcome_model = "cox",
+  truncation_model = "marginal",
+  censoring_model = "marginal",
+  b0 = 100,
+  seed = 1,
+  mtry = NULL,
+  ntree = 100L,
+  eps = 0.001,
   alpha = 0.1
 )
 }
 \arguments{
-\item{data_tr}{training data set}
+\item{data_tr}{Training data set.}
 
-\item{data_ca}{calibration data set}
+\item{data_ca}{Calibration data set.}
 
-\item{data_te}{test data set}
+\item{data_te}{Test data set.}
 
-\item{X}{variable name for observed event time}
+\item{X}{Variable name for the observed event time.}
 
-\item{Z}{vector of variable names for covariates}
+\item{Z}{Vector of variable names for covariates.}
 
-\item{L}{variable name for left truncation time}
+\item{L}{Variable name for the left-truncation time.}
 
-\item{R}{variable name for right truncation time}
+\item{R}{Variable name for the right-truncation or first sequential
+truncation time.}
 
-\item{Rp}{variable name for sequential truncation time}
+\item{Rp}{Variable name for the second sequential truncation time.}
 
-\item{delta}{variable name for event indicator}
+\item{delta}{Variable name for the event indicator.}
 
-\item{trunc_type}{truncation type: left, right, double, or seq}
+\item{trunc_type}{Truncation type: \code{"left"}, \code{"right"},
+\code{"double"}, or \code{"seq"}.}
 
-\item{cencoring}{censoring type: right}
+\item{censoring}{Censoring type: \code{"right"} or \code{"none"}.}
 
-\item{target}{MST or RMST}
+\item{target}{Prediction target. Left truncation supports \code{"RMST"};
+other truncation types support \code{"MST"}.}
 
-\item{tau}{used when targeting for RMST}
+\item{tau}{Restriction time used for RMST. By default, the 90th percentile
+of observed training times.}
 
-\item{model}{main model, cox or aft}
+\item{outcome_model}{Outcome model: \code{"cox"}, \code{"aft"}, or
+\code{"rf"}. RF is supported for left truncation only.}
 
-\item{lin_pred}{whether to output linear predictors from the main model}
+\item{truncation_model}{Truncation model: \code{"marginal"},
+\code{"reversed-cox"}, or \code{"rf"}. Dependent models are supported for
+left truncation only.}
 
-\item{alpha}{prespecified uncertainty level, default is 0.1}
+\item{censoring_model}{Censoring model: \code{"none"}, \code{"marginal"},
+\code{"cox"}, or \code{"rf"}. Dependent models are supported for
+left-truncated RMST only.}
+
+\item{b0}{Reverse-time origin used by left-truncation models.}
+
+\item{seed}{Random seed used by RF models.}
+
+\item{mtry}{Number of variables sampled at each RF split. By default, the
+smaller of four and the number of covariates.}
+
+\item{ntree}{Number of trees used by RF models.}
+
+\item{eps}{Lower bound applied to estimated inclusion and censoring
+probabilities.}
+
+\item{alpha}{Prespecified uncertainty level.}
 }
 \value{
-a data frame with 3 columns: y_pred, y_pred_hi, y_pred_lo
+A data frame with columns \code{y_pred}, \code{y_pred_hi}, and
+  \code{y_pred_lo}.
 }
 \description{
 Conformal prediction for truncated time-to-event data
 }
 \examples{
-# generate data
 set.seed(42)
 N <- 1000
 Z <- runif(N)
-X <- exp(Z)
+T <- exp(Z)
 C <- rexp(N)
 L <- rgamma(N, 0.25, 0.25)
-dat <- data.frame(X, Z, C, L)
-dat$delta <- as.integer(dat$X > dat$C)
-dat$X <- pmin(dat$X, dat$C)
+dat <- data.frame(X = pmin(T, C), Z, L, delta = as.integer(T <= C))
 dat <- dat[dat$L < dat$X, ]
 dat_tr <- dat[1:(nrow(dat) \%/\% 2), ]
 dat_ca <- dat[(nrow(dat) \%/\% 2 + 1):nrow(dat), ]
-tau <- quantile(c(dat_tr$X), 0.9)
+tau <- unname(quantile(dat_tr$X, 0.9))
 
-N_te <- 500
-Z <- runif(N_te)
-X <- exp(Z)
-C <- rexp(N_te)
-L <- rgamma(N_te, 1, 1)
-dat_te <- data.frame(X, Z, C, L)
-dat_te$delta <- as.integer(dat_te$X > dat_te$C)
-# conformal prediction
-pred <- conformal_pred(dat_tr, dat_ca, dat_te,
-                      X = "X", Z = c("Z"), L = "L", delta = "delta",
-                      trunc_type = "left", target = "RMST",
-                      tau = tau, model = "aft", alpha = 0.1)
-# calculate coverage
-coverage <- mean(pred$y_pred_hi > pmin(dat_te$X, tau) &
-                  pred$y_pred_lo < pmin(dat_te$X, tau))
-print(paste0("The coverage rate is ",coverage*100,"\%."))
-
+Z_te <- runif(100)
+T_te <- exp(Z_te)
+dat_te <- data.frame(Z = Z_te)
+pred <- conformal_pred(
+  dat_tr, dat_ca, dat_te,
+  X = "X", Z = "Z", L = "L", delta = "delta",
+  trunc_type = "left", censoring = "right", target = "RMST",
+  tau = tau, outcome_model = "cox", alpha = 0.1
+)
+mean(pred$y_pred_hi > pmin(T_te, tau) &
+       pred$y_pred_lo < pmin(T_te, tau))
 }

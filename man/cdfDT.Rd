@@ -19,6 +19,32 @@ cdfDT(
   display = TRUE
 )
 }
+\arguments{
+\item{y}{Observed event times.}
+
+\item{l}{Left-truncation times.}
+
+\item{r}{Right-truncation times.}
+
+\item{error}{Convergence tolerance.}
+
+\item{n.iter}{Maximum number of iterations.}
+
+\item{boot}{Whether to calculate bootstrap confidence intervals.}
+
+\item{B.boot}{Number of bootstrap samples.}
+
+\item{joint}{Whether to estimate the joint truncation distribution.}
+
+\item{plot.cdf}{Whether to plot the estimated CDF.}
+
+\item{plot.joint}{Whether to plot the estimated joint distribution.}
+
+\item{display}{Whether to print the estimation summary.}
+}
+\value{
+An invisible list containing estimated distribution quantities.
+}
 \description{
 Efficient re-implementation of distribution function estimation under
 double truncation based on SurvTrunc::cdfDT

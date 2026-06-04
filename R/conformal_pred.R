@@ -1,279 +1,334 @@
 #' Conformal prediction for truncated time-to-event data
 #'
-#' @param data_tr training data set
-#' @param data_ca calibration data set
-#' @param data_te test data set
-#' @param X variable name for observed event time
-#' @param Z vector of variable names for covariates
-#' @param L variable name for left truncation time
-#' @param R variable name for right truncation time
-#' @param Rp variable name for sequential truncation time
-#' @param delta variable name for event indicator
-#' @param trunc_type truncation type: left, right, double, or seq
-#' @param cencoring censoring type: right
-#' @param target MST or RMST
-#' @param tau used when targeting for RMST
-#' @param model main model, cox or aft
-#' @param lin_pred whether to output linear predictors from the main model
-#' @param alpha prespecified uncertainty level, default is 0.1
+#' @param data_tr Training data set.
+#' @param data_ca Calibration data set.
+#' @param data_te Test data set.
+#' @param X Variable name for the observed event time.
+#' @param Z Vector of variable names for covariates.
+#' @param L Variable name for the left-truncation time.
+#' @param R Variable name for the right-truncation or first sequential
+#'   truncation time.
+#' @param Rp Variable name for the second sequential truncation time.
+#' @param delta Variable name for the event indicator.
+#' @param trunc_type Truncation type: \code{"left"}, \code{"right"},
+#'   \code{"double"}, or \code{"seq"}.
+#' @param censoring Censoring type: \code{"right"} or \code{"none"}.
+#' @param target Prediction target. Left truncation supports \code{"RMST"};
+#'   other truncation types support \code{"MST"}.
+#' @param tau Restriction time used for RMST. By default, the 90th percentile
+#'   of observed training times.
+#' @param outcome_model Outcome model: \code{"cox"}, \code{"aft"}, or
+#'   \code{"rf"}. RF is supported for left truncation only.
+#' @param truncation_model Truncation model: \code{"marginal"},
+#'   \code{"reversed-cox"}, or \code{"rf"}. Dependent models are supported for
+#'   left truncation only.
+#' @param censoring_model Censoring model: \code{"none"}, \code{"marginal"},
+#'   \code{"cox"}, or \code{"rf"}. Dependent models are supported for
+#'   left-truncated RMST only.
+#' @param b0 Reverse-time origin used by left-truncation models.
+#' @param seed Random seed used by RF models.
+#' @param mtry Number of variables sampled at each RF split. By default, the
+#'   smaller of four and the number of covariates.
+#' @param ntree Number of trees used by RF models.
+#' @param eps Lower bound applied to estimated inclusion and censoring
+#'   probabilities.
+#' @param alpha Prespecified uncertainty level.
 #'
-#' @return a data frame with 3 columns: y_pred, y_pred_hi, y_pred_lo
-#' @import survival eha aftgee coxrt
+#' @return A data frame with columns \code{y_pred}, \code{y_pred_hi}, and
+#'   \code{y_pred_lo}.
 #' @importFrom survival Surv
-#'
 #' @export
 #'
 #' @examples
-#'# generate data
-#'set.seed(42)
-#'N <- 1000
-#'Z <- runif(N)
-#'X <- exp(Z)
-#'C <- rexp(N)
-#'L <- rgamma(N, 0.25, 0.25)
-#'dat <- data.frame(X, Z, C, L)
-#'dat$delta <- as.integer(dat$X > dat$C)
-#'dat$X <- pmin(dat$X, dat$C)
-#'dat <- dat[dat$L < dat$X, ]
-#'dat_tr <- dat[1:(nrow(dat) %/% 2), ]
-#'dat_ca <- dat[(nrow(dat) %/% 2 + 1):nrow(dat), ]
-#'tau <- quantile(c(dat_tr$X), 0.9)
+#' set.seed(42)
+#' N <- 1000
+#' Z <- runif(N)
+#' T <- exp(Z)
+#' C <- rexp(N)
+#' L <- rgamma(N, 0.25, 0.25)
+#' dat <- data.frame(X = pmin(T, C), Z, L, delta = as.integer(T <= C))
+#' dat <- dat[dat$L < dat$X, ]
+#' dat_tr <- dat[1:(nrow(dat) %/% 2), ]
+#' dat_ca <- dat[(nrow(dat) %/% 2 + 1):nrow(dat), ]
+#' tau <- unname(quantile(dat_tr$X, 0.9))
 #'
-#'N_te <- 500
-#'Z <- runif(N_te)
-#'X <- exp(Z)
-#'C <- rexp(N_te)
-#'L <- rgamma(N_te, 1, 1)
-#'dat_te <- data.frame(X, Z, C, L)
-#'dat_te$delta <- as.integer(dat_te$X > dat_te$C)
-#'# conformal prediction
-#'pred <- conformal_pred(dat_tr, dat_ca, dat_te,
-#'                       X = "X", Z = c("Z"), L = "L", delta = "delta",
-#'                       trunc_type = "left", target = "RMST",
-#'                       tau = tau, model = "aft", alpha = 0.1)
-#'# calculate coverage
-#'coverage <- mean(pred$y_pred_hi > pmin(dat_te$X, tau) &
-#'                   pred$y_pred_lo < pmin(dat_te$X, tau))
-#'print(paste0("The coverage rate is ",coverage*100,"%."))
-#'
+#' Z_te <- runif(100)
+#' T_te <- exp(Z_te)
+#' dat_te <- data.frame(Z = Z_te)
+#' pred <- conformal_pred(
+#'   dat_tr, dat_ca, dat_te,
+#'   X = "X", Z = "Z", L = "L", delta = "delta",
+#'   trunc_type = "left", censoring = "right", target = "RMST",
+#'   tau = tau, outcome_model = "cox", alpha = 0.1
+#' )
+#' mean(pred$y_pred_hi > pmin(T_te, tau) &
+#'        pred$y_pred_lo < pmin(T_te, tau))
 conformal_pred <- function(data_tr, data_ca, data_te,
-                           X = "X", Z = "Z", L = "L", R = "R", Rp, delta = "delta",
-                           trunc_type = "left", cencoring = "right",
-                           target = "RMST", tau = NA, model = "cox",
-                           lin_pred = FALSE, alpha = 0.1) {
-  if (target == "RMST") {
-    if (is.na(tau)) tau <- unname(quantile(c(data_tr$X),0.9))
+                           X = "X", Z = "Z", L = "L", R = "R", Rp = "Rp",
+                           delta = "delta",
+                           trunc_type = "left",
+                           censoring = "right",
+                           target = "RMST",
+                           tau = NA_real_,
+                           outcome_model = "cox",
+                           truncation_model = "marginal",
+                           censoring_model = "marginal",
+                           b0 = 100,
+                           seed = 1,
+                           mtry = NULL,
+                           ntree = 100L,
+                           eps = 1e-3,
+                           alpha = 0.1) {
+  trunc_type <- match_choice(trunc_type, c("left", "right", "double", "seq"),
+                             "trunc_type")
+  censoring <- match_choice(censoring, c("right", "none"), "censoring")
+  target <- match_choice(target, c("RMST", "MST"), "target")
+  outcome_model <- match_choice(outcome_model, c("cox", "aft", "rf"),
+                                "outcome_model")
+  truncation_model <- match_choice(
+    truncation_model, c("marginal", "reversed-cox", "rf"),
+    "truncation_model"
+  )
+  censoring_model <- match_choice(
+    censoring_model, c("none", "marginal", "cox", "rf"),
+    "censoring_model"
+  )
+  validate_scalar_probability(alpha, "alpha")
+  validate_scalar_probability(eps, "eps")
+
+  if (is.null(mtry)) {
+    mtry <- min(4L, length(Z))
   }
+  if (length(mtry) != 1L || !is.finite(mtry) || mtry < 1) {
+    stop("mtry must be a positive number.", call. = FALSE)
+  }
+  if (length(ntree) != 1L || !is.finite(ntree) || ntree < 1) {
+    stop("ntree must be a positive number.", call. = FALSE)
+  }
+
   if (trunc_type == "left") {
-    if (model == "cox") {
-      # Surv(L, X, delta) ~ Z1 + Z2 + Z3
-      fmla <- as.formula(paste("Surv(",L,",", X,",", delta,") ~ ",
-                               paste(Z,collapse = "+")))
-      model <- survival::coxph(fmla, data=data_tr)
-      Zbhat <- as.vector(as.matrix(data_te[,Z]) %*% as.matrix(model$coefficients))
-      mu_hat_tau_n1 <- predict_rmst(model, tau, newdata = data_ca)
-      pred_data_te_mu <- predict_rmst(model, tau, newdata = data_te)
-    } else if (model == "aft") {
-      b0 <- 100 # an arbitary large number
-      L_tilde <- b0-data_tr[[L]]
-      X_tilde <- b0-data_tr[[X]]
-      model.trunc.fit <- survival::survfit(Surv(X_tilde, L_tilde, rep(1,nrow(data_tr))) ~ 1,
-                                 data=data_tr, timefix = FALSE) # see line 60
-      trunc_time <- rev(b0-model.trunc.fit$time)
-      trunc_prob <- c(1-rev(model.trunc.fit$surv), 0)
-
-      t <- data_tr[[X]]
-      # X_hat for truncation
-      X_hat <- rep(NA, length(t))
-      for (i in 1:length(t)) {
-        temp_ind <- which(trunc_time<t[i])
-        if (length(temp_ind)==0) {
-          X_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
-        } else {
-          X_hat[i] <- trunc_prob[max(temp_ind)+1]
-          if(X_hat[i]==1) X_hat[i]<-0.999
-        }
-      }
-      # Surv(X, delta) ~ Z1 + Z2 + Z3
-      fmla <- as.formula(paste("Surv(", X,",", delta,") ~ ",
-                               paste(Z,collapse = "+")))
-      # model <- aftgee(fmla, data=data_tr, weights=1/(1-X_hat))
-      invisible(capture.output(
-        model <- aftgee::aftgee(fmla, data=data_tr, weights=1/(1-X_hat), B=0, binit="lm") ))
-      Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model$coefficients[,2]
-      mu_hat_tau_n1 <- predict_aft_semipar(model, newdata = data_ca, tau=tau)
-      pred_data_te_mu <- predict_aft_semipar(model, newdata = data_te, tau=tau)
-      ### old
-      # model <- aftreg(fmla, data=data_tr, dist=aft_dist)
-      # mu_hat_tau_n1 <- predict.aftreg(model, newdata = data_ca[,Z], dist = aft_dist)
-      # pred_data_te_mu <- predict.aftreg(model, newdata = data_te[,Z], dist = aft_dist)
-    }
-    ## model to estimate truncation time, fitted by training data
-    # b0 <- max(c(data_tr$time,data_tr$L,data_ca$time,data_ca$L,data_te$time,data_te$L))+1
-    b0 <- 100 # an arbitary large number
-    L_tilde <- b0-data_tr[[L]]
-    X_tilde <- b0-data_tr[[X]]
-    model.trunc.fit <- survival::survfit(Surv(X_tilde, L_tilde, rep(1,nrow(data_tr))) ~ 1,
-                               data=data_tr, timefix = FALSE)
-    # Error in aeqSurv(Y) :
-    #   aeqSurv exception, an interval has effective length 0
-    # Probably the cause is the aeqSurv routine that treats time values such
-    #  that tiny differences are treated as a tie. This is actually useful and
-    # the error is potentially pointing an issue with the data.
-    # However, if we need to force a solution you can use the coxph.options.
-    # Just setting timefix = FALSE in the call to coxph should make the trick!
-    #   https://stackoverflow.com/questions/46988426/error-in-aeqsurvy-aeqsurv-exception-an-interval-has-effective-length-0
-    #   Source: https://rdrr.io/cran/survival/src/R/aeqSurv.R
-    trunc_time <- rev(b0-model.trunc.fit$time)
-    trunc_prob <- c(1-rev(model.trunc.fit$surv), 0)
-
-    t <- data_ca[[X]]
-    # X_hat for truncation
-    X_hat <- rep(NA, length(t))
-    for (i in 1:length(t)) {
-      temp_ind <- which(trunc_time<t[i])
-      if (length(temp_ind)==0) {
-        X_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
-      } else {
-        X_hat[i] <- trunc_prob[max(temp_ind)+1]
-        if(X_hat[i]==1) X_hat[i]<-0.999
-      }
-    }
-    # G_hat for censoring
-    G <- survival::survfit(Surv(data_tr[[L]], data_tr[[X]], 1-data_tr[[delta]]) ~ 1,
-                 se.fit=F, stype=2) # Breslow
-    G_hat_T <- B(G, t=data_ca[[X]], newdata=data_ca)
-    # w <- 1/ (1-X_hat) * (0 + data_ca[[delta]]/ ((1-G_hat_T)))
-    w <- 1/ (1-X_hat) * ## 1/Pr(L<x)
-      (data_ca[[delta]] / (1-G_hat_T)*(data_ca[[X]]<=tau) +
-         1 / (1-G_hat_T)*(data_ca[[X]]>tau))
+    validate_left_configuration(censoring, target, censoring_model)
+    return(conformal_pred_left(
+      data_tr = data_tr, data_ca = data_ca, data_te = data_te,
+      X = X, Z = Z, L = L, delta = delta,
+      censoring = censoring, tau = tau,
+      outcome_model = outcome_model,
+      truncation_model = truncation_model,
+      censoring_model = censoring_model,
+      b0 = b0, seed = seed, mtry = mtry, ntree = ntree,
+      eps = eps, alpha = alpha
+    ))
   }
-  else if (trunc_type == "right") {
-    model.trunc.fit <- survival::survfit(Surv(data_tr[[X]], data_tr[[R]], rep(1, nrow(data_tr)))~1)
-    trunc_time <- rev(model.trunc.fit$time)
-    trunc_prob <- c(1-rev(model.trunc.fit$surv), 0)
-    if (model == "aft") {
-      t <- data_tr[[X]]
-      G_hat <- rep(NA, length(t))
-      for (i in 1:length(t)) {
-        # right truncation: find where trunc_time>t[i]
-        temp_ind <- which(trunc_time>t[i])
-        if (length(temp_ind)==0) {
-          G_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
-        } else {
-          G_hat[i] <- trunc_prob[max(temp_ind)+1]
-          if(G_hat[i]==1) G_hat[i]<-0.999
-        }
-      }
-      fmla <- as.formula(paste("log(",X,") ~", paste(Z, collapse = "+")))
-      model <- lm(fmla, data=data_tr, weights=1/(1-G_hat))
-      Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model$coefficients
-      mu_hat_tau_n1 <- predict_aft_semipar(model, newdata = data_ca)
-      pred_data_te_mu <- predict_aft_semipar(model, newdata = data_te)
-    } else if (model=="cox") {
-      coxrt_beta <- coxrt:::.get_est(data_tr[[X]], data_tr[[R]], as.matrix(data_tr[,Z]),
-                                     rep(1,nrow(data_tr)))[["est"]]
-      fmla <- as.formula(paste("Surv(",X,") ~", paste(Z, collapse = "+")))
-      model <- survival::coxph(fmla, data = data_tr)
-      # hack
-      model$coefficients <- coxrt_beta
-      Zbhat <- as.vector(as.matrix(data_te[,Z]) %*% as.matrix(model$coefficients))
-      # model <- coxph(Surv(L, time, event_1)~Z1, D_n1)
-      mu_hat_tau_n1 <- predict_rmst(model, newdata = data_ca)
-      pred_data_te_mu <- predict_rmst(model, newdata = data_te)
-    }
 
-    t <- data_ca[[X]]
-    G_hat <- rep(NA, length(t))
-    for (i in 1:length(t)) {
-      # right truncation: find where trunc_time>t[i]
-      temp_ind <- which(trunc_time>t[i])
-      if (length(temp_ind)==0) {
-        G_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
-      } else {
-        G_hat[i] <- trunc_prob[max(temp_ind)+1]
-        if(G_hat[i]==1) G_hat[i]<-0.999
-      }
-    }
-    w <- 1/(1-G_hat) ## 1/Pr(R>x)
-  }
-  else if (trunc_type == "double") {
-    model.NPMLE <- cdfDT(y=data_tr[[X]], l=data_tr[[L]], r=data_tr[[R]], display=F)
-    if (model == "cox") {
-      fmla <- as.formula(paste("Surv(",X,") ~", paste(Z, collapse = "+")))
-      model <- survival::coxph(fmla, data = data_tr, weights = 1/model.NPMLE$P.K)
-      Zbhat <- as.vector(as.matrix(data_te[,Z]) %*% as.matrix(model$coefficients))
-      mu_hat_tau_n1 <- predict_rmst(model, newdata = data_ca)
-      pred_data_te_mu <- predict_rmst(model, newdata = data_te)
-    } else if (model == "aft") {
-      fmla <- as.formula(paste("log(",X,") ~", paste(Z, collapse = "+")))
-      model <- lm(fmla, data=data_tr, weights=1/model.NPMLE$P.K)
-      Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model$coefficients
-      mu_hat_tau_n1 <- predict_aft_semipar(model, newdata = data_ca)
-      pred_data_te_mu <- predict_aft_semipar(model, newdata = data_te)
-    }
-    model.n2.NPMLE <- cdfDT(y=data_ca[[X]], l=data_ca[[L]], r=data_ca[[R]], display=F)
-    w <- 1/model.n2.NPMLE$P.K
-  }
-  else if (trunc_type == "seq") {
-    if (model == "cox") {
-      model_PO <- seqTrun.modPOreg.cox(data.frame(L=data_tr[[X]], X=data_tr[[R]],
-                                                  R=data_tr[[Rp]], Z=data_tr[[Z]]))
-      model_PO_coef <- model_PO$`Coefficient estimate`
-      Zbhat <- cbind(as.matrix(data_te[,Z])) %*% model_PO_coef
-      mu_hat_tau_n1 <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_ca)
-      pred_data_te_mu <- predict_rmst_seqTrun(model_PO, data=data_tr, newdata = data_te)
-    } else if (model == "aft") {
-      model_PO <- seqTrun.modPOreg.aft(data.frame(L=data_tr[[X]], X=data_tr[[R]],
-                                                  R=data_tr[[Rp]], Z=data_tr[[Z]]))
-      model_PO_coef <- model_PO$mean[, 1]
-      Zbhat <- cbind(1, as.matrix(data_te[,Z])) %*% model_PO_coef
-      mu_hat_tau_n1 <- predict.aft.semipar.seqTrun(model_PO, data_tr, newdata = data_ca)
-      pred_data_te_mu <- predict.aft.semipar.seqTrun(model_PO, data_tr, newdata = data_te)
-    }
+  validate_non_left_configuration(
+    trunc_type, censoring, target, outcome_model,
+    truncation_model, censoring_model
+  )
 
-    ## weighting ===========================
-    model.trunc.fit <- survfit(Surv(data_tr[["R"]], data_tr[["RR"]], rep(1, nrow(data_tr)))~1)
-    trunc_time <- rev(model.trunc.fit$time)
-    trunc_prob <- c(1-rev(model.trunc.fit$surv), 0)
-    t <- data_ca[["R"]]
-    G_hat <- rep(NA, length(t))
-    for (i in 1:length(t)) {
-      temp_ind <- which(trunc_time>t[i])
-      if (length(temp_ind)==0) {
-        G_hat[i] <- 0.999 ## use a number close to 1, instead of 1, to avoid divided by 0.
-      } else {
-        G_hat[i] <- trunc_prob[max(temp_ind)+1]
-        if(G_hat[i]==1) G_hat[i]<-0.999
-      }
-    }
-    w <- 1/(1-G_hat) ## 1/Pr(R>x)
-
+  if (trunc_type == "right") {
+    return(conformal_pred_right(
+      data_tr, data_ca, data_te, X = X, Z = Z, R = R,
+      outcome_model = outcome_model, eps = eps, alpha = alpha
+    ))
   }
-  if (target == "RMST") {
-    Re_star <- pmin(data_ca[[X]], tau)-mu_hat_tau_n1
-  } else {
-    Re_star <- data_ca[[X]]-mu_hat_tau_n1
+  if (trunc_type == "double") {
+    return(conformal_pred_double(
+      data_tr, data_ca, data_te, X = X, Z = Z, L = L, R = R,
+      outcome_model = outcome_model, alpha = alpha
+    ))
   }
-  w_order_std <- w[order(Re_star)] / sum(w)
-  ind <- which.max(cumsum(w_order_std) >= 1 - alpha)
-  q_star <- sort(Re_star)[ind]
-
-  if (target == "RMST") {
-    pred_data_te <- data.frame(y_pred = pred_data_te_mu)
-  } else {
-    pred_data_te <- data.frame(y_pred = pmin(pred_data_te_mu, tau))
-  }
-  pred_data_te$y_pred_hi <- pred_data_te$y_pred + q_star
-  pred_data_te$y_pred_lo <- pred_data_te$y_pred - q_star
-  if (lin_pred) pred_data_te$Zbhat <- Zbhat
-  return (pred_data_te)
+  conformal_pred_seq(
+    data_tr, data_ca, data_te, X = X, Z = Z, R = R, Rp = Rp,
+    outcome_model = outcome_model, eps = eps, alpha = alpha
+  )
 }
 
-# Surv(L, X, delta) ~ Z1+Z2+Z3
-#
-# Z=rnorm(100)
-# X=exp(Z)
-# fmla = as.formula(paste("Surv(X)~Z"))
-# library(survival)
-# model=survreg(fmla)
+validate_left_configuration <- function(censoring, target, censoring_model) {
+  if (target != "RMST") {
+    stop("Left truncation supports target = \"RMST\" only.", call. = FALSE)
+  }
+  if (censoring == "none" && censoring_model != "none") {
+    stop("censoring_model must be \"none\" when censoring = \"none\".",
+         call. = FALSE)
+  }
+  if (censoring == "right" && censoring_model == "none") {
+    stop("censoring_model cannot be \"none\" when censoring = \"right\".",
+         call. = FALSE)
+  }
+}
+
+validate_non_left_configuration <- function(trunc_type, censoring, target,
+                                            outcome_model, truncation_model,
+                                            censoring_model) {
+  if (censoring != "none" || censoring_model != "none") {
+    stop(paste(trunc_type, "truncation requires censoring = \"none\" and",
+               "censoring_model = \"none\"."), call. = FALSE)
+  }
+  if (target != "MST") {
+    stop(paste(trunc_type, "truncation supports target = \"MST\" only."),
+         call. = FALSE)
+  }
+  if (outcome_model == "rf") {
+    stop("outcome_model = \"rf\" is supported for left truncation only.",
+         call. = FALSE)
+  }
+  if (truncation_model != "marginal") {
+    stop("Dependent truncation models are supported for left truncation only.",
+         call. = FALSE)
+  }
+}
+
+conformal_pred_left <- function(data_tr, data_ca, data_te,
+                                X, Z, L, delta, censoring, tau,
+                                outcome_model, truncation_model,
+                                censoring_model, b0, seed, mtry, ntree,
+                                eps, alpha) {
+  require_columns(data_tr, c(X, Z, L), "data_tr")
+  require_columns(data_ca, c(X, Z, L), "data_ca")
+  require_columns(data_te, Z, "data_te")
+
+  if (censoring == "right") {
+    require_columns(data_tr, delta, "data_tr")
+    require_columns(data_ca, delta, "data_ca")
+  } else {
+    data_tr[[delta]] <- 1L
+    data_ca[[delta]] <- 1L
+  }
+
+  if (is.na(tau)) {
+    tau <- unname(stats::quantile(data_tr[[X]], 0.9))
+  }
+  if (length(tau) != 1L || !is.finite(tau) || tau <= 0) {
+    stop("tau must be a positive number.", call. = FALSE)
+  }
+  if (truncation_model %in% c("reversed-cox", "rf")) {
+    validate_reverse_time_bound(data_tr, data_ca, X, L, b0)
+  }
+
+  truncation_fit <- fit_left_truncation_model(
+    data_tr, X, Z, L, truncation_model, b0, seed, mtry, ntree
+  )
+  H_tr <- predict_left_inclusion_probability(
+    truncation_fit, data_tr, X, L, b0, eps
+  )
+  H_ca <- predict_left_inclusion_probability(
+    truncation_fit, data_ca, X, L, b0, eps
+  )
+
+  outcome_fit <- fit_left_outcome_model(
+    data_tr, X, Z, L, delta, outcome_model, H_tr, seed, mtry, ntree
+  )
+  mu_ca <- predict_left_outcome_mean(
+    outcome_fit, data_tr, data_ca, L, X, delta, tau
+  )
+  mu_te <- predict_left_outcome_mean(
+    outcome_fit, data_tr, data_te, L, X, delta, tau
+  )
+
+  censoring_fit <- fit_left_censoring_model(
+    data_tr, X, Z, L, delta, censoring_model, seed, mtry, ntree
+  )
+  S_cens_X <- predict_left_censoring_survival(
+    censoring_fit, data_ca, data_ca[[X]], L, X, eps
+  )
+  S_cens_tau <- predict_left_censoring_survival(
+    censoring_fit, data_ca, rep(tau, nrow(data_ca)), L, X, eps
+  )
+
+  censoring_weight <- data_ca[[delta]] / S_cens_X * (data_ca[[X]] <= tau) +
+    1 / S_cens_tau * (data_ca[[X]] > tau)
+  weights <- censoring_weight / H_ca
+  scores <- abs(pmin(data_ca[[X]], tau) - mu_ca)
+  prediction_interval(mu_te, scores, weights, alpha)
+}
+
+conformal_pred_right <- function(data_tr, data_ca, data_te,
+                                 X, Z, R, outcome_model, eps, alpha) {
+  require_columns(data_tr, c(X, Z, R), "data_tr")
+  require_columns(data_ca, c(X, Z, R), "data_ca")
+  require_columns(data_te, Z, "data_te")
+
+  truncation_fit <- survival::survfit(
+    survival::Surv(data_tr[[X]], data_tr[[R]], rep(1, nrow(data_tr))) ~ 1,
+    timefix = FALSE
+  )
+  H_tr <- clamp_probability(
+    predict_marginal_survival_at_times(truncation_fit, data_tr[[X]]), eps
+  )
+  H_ca <- clamp_probability(
+    predict_marginal_survival_at_times(truncation_fit, data_ca[[X]]), eps
+  )
+
+  if (outcome_model == "aft") {
+    fmla <- stats::reformulate(Z, response = paste0("log(", X, ")"))
+    outcome_fit <- stats::lm(fmla, data = data_tr, weights = 1 / H_tr)
+    mu_ca <- predict_aft_semipar(
+      outcome_fit, data_ca, data = data_tr, trunc_type = "right", R = R
+    )
+    mu_te <- predict_aft_semipar(
+      outcome_fit, data_te, data = data_tr, trunc_type = "right", R = R
+    )
+  } else {
+    right_truncation_fmla <- stats::reformulate(Z, response = X)
+    right_truncation_data <- data_tr
+    right_truncation_data$.right_truncation <- right_truncation_data[[R]]
+    right_truncation_fit <- coxrt::coxph.RT(
+      right_truncation_fmla,
+      right = .right_truncation,
+      data = right_truncation_data
+    )
+    if (is.null(right_truncation_fit)) {
+      stop("The right-truncated Cox model could not be estimated.", call. = FALSE)
+    }
+    beta <- right_truncation_fit$coef
+    fmla <- make_surv_formula(stop = X, Z = Z)
+    outcome_fit <- survival::coxph(fmla, data = data_tr, model = TRUE, x = TRUE)
+    outcome_fit$coefficients <- beta
+    mu_ca <- predict_cox_mean(outcome_fit, data_ca)
+    mu_te <- predict_cox_mean(outcome_fit, data_te)
+  }
+
+  scores <- abs(data_ca[[X]] - mu_ca)
+  prediction_interval(mu_te, scores, 1 / H_ca, alpha)
+}
+
+conformal_pred_double <- function(data_tr, data_ca, data_te,
+                                  X, Z, L, R, outcome_model, alpha) {
+  require_columns(data_tr, c(X, Z, L, R), "data_tr")
+  require_columns(data_ca, c(X, Z, L, R), "data_ca")
+  require_columns(data_te, Z, "data_te")
+
+  npmle_tr <- cdfDT(data_tr[[X]], data_tr[[L]], data_tr[[R]], display = FALSE)
+  npmle_ca <- cdfDT(data_ca[[X]], data_ca[[L]], data_ca[[R]], display = FALSE)
+  data_tr$.outcome_weight <- 1 / npmle_tr$P.K
+  if (outcome_model == "cox") {
+    fmla <- make_surv_formula(stop = X, Z = Z)
+    outcome_fit <- survival::coxph(
+      fmla, data = data_tr, weights = .outcome_weight,
+      model = TRUE, x = TRUE
+    )
+    mu_ca <- predict_cox_mean(outcome_fit, data_ca)
+    mu_te <- predict_cox_mean(outcome_fit, data_te)
+  } else {
+    fmla <- stats::reformulate(Z, response = paste0("log(", X, ")"))
+    outcome_fit <- stats::lm(fmla, data = data_tr, weights = .outcome_weight)
+    mu_ca <- predict_aft_semipar(
+      outcome_fit, data_ca, data = data_tr, trunc_type = "double", L = L, R = R
+    )
+    mu_te <- predict_aft_semipar(
+      outcome_fit, data_te, data = data_tr, trunc_type = "double", L = L, R = R
+    )
+  }
+
+  scores <- abs(data_ca[[X]] - mu_ca)
+  prediction_interval(mu_te, scores, 1 / npmle_ca$P.K, alpha)
+}
+
+prediction_interval <- function(prediction, scores, weights, alpha) {
+  q_star <- weighted_conformal_quantile(scores, weights, alpha)
+  data.frame(
+    y_pred = as.numeric(prediction),
+    y_pred_hi = as.numeric(prediction + q_star),
+    y_pred_lo = as.numeric(prediction - q_star)
+  )
+}

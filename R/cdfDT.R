@@ -1,7 +1,23 @@
 #' Efficient re-implementation of distribution function estimation under
 #' double truncation based on SurvTrunc::cdfDT
 #'
+#' @param y Observed event times.
+#' @param l Left-truncation times.
+#' @param r Right-truncation times.
+#' @param error Convergence tolerance.
+#' @param n.iter Maximum number of iterations.
+#' @param boot Whether to calculate bootstrap confidence intervals.
+#' @param B.boot Number of bootstrap samples.
+#' @param joint Whether to estimate the joint truncation distribution.
+#' @param plot.cdf Whether to plot the estimated CDF.
+#' @param plot.joint Whether to plot the estimated joint distribution.
+#' @param display Whether to print the estimation summary.
 #'
+#' @return An invisible list containing estimated distribution quantities.
+#'
+#' @importFrom grDevices dev.new
+#' @importFrom graphics lines par persp
+#' @importFrom stats na.omit
 cdfDT <- function (y, l, r, error = 1e-06, n.iter = 10000, boot = FALSE,
                     B.boot = 200, joint = FALSE, plot.cdf = FALSE, plot.joint = FALSE,
                     display = TRUE)

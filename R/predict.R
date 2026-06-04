@@ -1,179 +1,150 @@
-predict_aft_semipar <- function(model, newdata, tau = NA, data, trunc_type = "left") {
-  if (class(model) == "lm") {
+integrate_survival_curve <- function(curve, tau = NA_real_) {
+  survival <- as.matrix(curve$surv)
+  if (!is.na(tau)) {
+    keep <- curve$time < tau
+    times <- c(0, curve$time[keep], tau)
+    survival <- rbind(1, survival[keep, , drop = FALSE])
+  } else {
+    times <- c(0, curve$time)
+    survival <- rbind(1, survival[-nrow(survival), , drop = FALSE])
+  }
+  unname(colSums(diff(times) * survival))
+}
+
+predict_cox_mean <- function(model, newdata, tau = NA_real_) {
+  curve <- survival::survfit(model, newdata = newdata)
+  integrate_survival_curve(curve, tau)
+}
+
+predict_aft_semipar <- function(model, newdata, tau = NA_real_, data,
+                                trunc_type = "left", L = "L", R = "R") {
+  if (inherits(model, "lm")) {
     exp_resid <- exp(model$residuals)
-    N <- length(model$residuals)
+    n <- length(exp_resid)
     if (trunc_type == "left") {
-      exp_resid_L <- exp(log(data$L)- model$fitted.values)
-      exp_resid_surv <- survfit(Surv(exp_resid_L, exp_resid, rep(1, N)) ~ 1, se.fit=F)
-    } else if (trunc_type == "right") {
-      exp_resid_R <- exp(log(data$R)- model$fitted.values)
-      exp_resid_surv <- survfit(Surv(-exp_resid_R, -exp_resid, rep(1, N)) ~ 1, se.fit=F)
-      exp_resid_surv$time <- rev(-exp_resid_surv$time)
-      exp_resid_surv$surv <- rev(1-exp_resid_surv$surv)
-    } else if (trunc_type == "double") {
-      exp_resid_L <- exp(log(data$L)- model$fitted.values)
-      exp_resid_R <- exp(log(data$R)- model$fitted.values)
-      NPMLE_fit <- cdfDT(exp_resid, exp_resid_L, exp_resid_R, display=F)
-      exp_resid_surv <- list(
-        time = NPMLE_fit$time,
-        surv = NPMLE_fit$Survival
+      exp_resid_L <- exp(log(data[[L]]) - model$fitted.values)
+      exp_resid_surv <- survival::survfit(
+        survival::Surv(exp_resid_L, exp_resid, rep(1, n)) ~ 1,
+        se.fit = FALSE
       )
-    }
-    if (!is.na(tau)) { # RMST
-      exp_nlp <- exp(-predict(model, newdata))
-      tau2 <- tau * exp_nlp
-      pred <- rep(NA, nrow(newdata))
-      for (i in 1:nrow(newdata)) {
-        times <- c(0, exp_resid_surv$time[exp_resid_surv$time < tau2[i]], tau2[i])
-        surv_probs <- c(1, exp_resid_surv$surv[exp_resid_surv$time < tau2[i]])
-        pred[i] <- sum(diff(times) * surv_probs)
-      }
-      pred <- pred / exp_nlp
-    } else { # MST
-      times <- c(0, exp_resid_surv$time)
-      surv_probs <- c(1, exp_resid_surv$surv[-length(exp_resid_surv$surv)])
-      area <- sum(diff(times) * surv_probs)
-      pred <- unname(exp(predict(model, newdata))*area)
-    }
-  } else if (class(model) == "aftgee") {
-    linpred <- cbind(1, model$data$x) %*% model$coefficients[,2]
-
-    #time <- model$data$y * exp(-linpred)
-    #delta <- model$data$d
-    #exp_resid_surv <- survfit(Surv(time, delta) ~ 1, se.fit=F)
-
-    exp_resid <- model$data$y * exp(-linpred)
-    N <- length(model$data$y)
-    delta <- model$data$d
-    if (trunc_type == "left") {
-      exp_resid_L <- exp(log(data$L)- linpred)
-      exp_resid_surv <- survfit(Surv(exp_resid_L, exp_resid, delta) ~ 1, se.fit=F)
+    } else if (trunc_type == "right") {
+      exp_resid_R <- exp(log(data[[R]]) - model$fitted.values)
+      exp_resid_surv <- survival::survfit(
+        survival::Surv(-exp_resid_R, -exp_resid, rep(1, n)) ~ 1,
+        se.fit = FALSE
+      )
+      exp_resid_surv$time <- rev(-exp_resid_surv$time)
+      exp_resid_surv$surv <- rev(1 - exp_resid_surv$surv)
+    } else {
+      exp_resid_L <- exp(log(data[[L]]) - model$fitted.values)
+      exp_resid_R <- exp(log(data[[R]]) - model$fitted.values)
+      npmle_fit <- cdfDT(exp_resid, exp_resid_L, exp_resid_R, display = FALSE)
+      exp_resid_surv <- list(time = npmle_fit$time, surv = npmle_fit$Survival)
     }
 
-    if (!is.na(tau)) { # RMST
-      varnames <- dimnames(model$coefficients)[[1]][-1]
-      Xmat <- as.matrix(newdata[,varnames,drop=F])
-      linpred_new <- as.vector(cbind(1, Xmat) %*% model$coefficients[,2])
-      exp_nlp <- exp(-linpred_new)
-      tau2 <- tau * exp_nlp
-      pred <- rep(NA, nrow(newdata))
-      for (i in 1:nrow(newdata)) {
-        times <- c(0, exp_resid_surv$time[exp_resid_surv$time < tau2[i]], tau2[i])
-        surv_probs <- c(1, exp_resid_surv$surv[exp_resid_surv$time < tau2[i]])
-        pred[i] <- sum(diff(times) * surv_probs)
-      }
-      pred <- pred / exp_nlp
-    } else { # MST
-      warning("Trying to calculate MST for censored data. MST may be biased.")
-      times <- c(0, exp_resid_surv$time)
-      surv_probs <- c(1, exp_resid_surv$surv[-length(exp_resid_surv$surv)])
-      area <- sum(diff(times) * surv_probs)
-      pred <- as.vector(exp(linpred)*area)
+    if (!is.na(tau)) {
+      exp_nlp <- exp(-stats::predict(model, newdata))
+      tau_scaled <- tau * exp_nlp
+      pred <- vapply(seq_len(nrow(newdata)), function(i) {
+        keep <- exp_resid_surv$time < tau_scaled[i]
+        times <- c(0, exp_resid_surv$time[keep], tau_scaled[i])
+        surv_probs <- c(1, exp_resid_surv$surv[keep])
+        sum(diff(times) * surv_probs)
+      }, numeric(1))
+      return(pred / exp_nlp)
     }
+
+    times <- c(0, exp_resid_surv$time)
+    surv_probs <- c(1, exp_resid_surv$surv[-length(exp_resid_surv$surv)])
+    area <- sum(diff(times) * surv_probs)
+    return(unname(exp(stats::predict(model, newdata)) * area))
   }
-  return (pred)
-}
 
-predict_rmst <- function(cox_model, tau = NA, newdata) {
-  surv_curve <- survival::survfit(cox_model, newdata = newdata)
-  if (!is.na(tau)) {
-    times <- c(0, surv_curve$time[surv_curve$time < tau], tau)
-    surv_probs <- rbind(1, surv_curve$surv[surv_curve$time < tau,])
-  } else {
-    times <- c(0, surv_curve$time)
-    surv_probs <- rbind(1, surv_curve$surv[-nrow(surv_curve$surv),])
-  }
-  area <- colSums(diff(times) * surv_probs)
-  return (unname(area))
-}
-
-
-predict.aft.semipar.seqTrun <- function(model, newdata) {
-  if (class(model) == "lm") {
-    exp_resid <- exp(model$residuals)
-    exp_resid_surv <- survfit(Surv(exp_resid) ~ 1, se.fit=F)
-    if (!is.na(tau)) { # RMST
-      exp_nlp <- exp(-predict(model, newdata))
-      tau2 <- tau * exp_nlp
-      pred <- rep(NA, nrow(newdata))
-      for (i in 1:nrow(newdata)) {
-        times <- c(0, exp_resid_surv$time[exp_resid_surv$time < tau2[i]], tau2[i])
-        surv_probs <- c(1, exp_resid_surv$surv[exp_resid_surv$time < tau2[i]])
-        pred[i] <- sum(diff(times) * surv_probs)
-      }
-      pred <- pred / exp_nlp
-    } else { # MST
-      times <- c(0, exp_resid_surv$time)
-      surv_probs <- c(1, exp_resid_surv$surv[-length(exp_resid_surv$surv)])
-      area <- sum(diff(times) * surv_probs)
-      pred <- unname(exp(predict(model, newdata))*area)
-    }
-  }
-  return (pred)
-}
-
-
-survfit.seqTrun <- function(cox_model, data, newdata) {
-  # data: X, R, RR, Zj
-  N <- nrow(data)
-  beta <- cox_model$`Coefficient estimate`
-  data <- data[order(data[["X"]]), ]
-  km.fit <- survfit(Surv(R, RR, rep(1, nrow(data)))~1, data, se.fit=F)
-  times <- data[["X"]]
-  times_ind <- findInterval(times, km.fit$time)
-  times_ind <- times_ind + 1
-  surv_prob <- c(1, km.fit$surv)
-  S_RR_X <- surv_prob[times_ind]
-  exp_lin_pred <- exp(data[["Z1"]] * beta)
-  denom <- exp_lin_pred / S_RR_X
-
-  times_uniq <- unique(times)
-  times_uniq_ind <- findInterval(times_uniq, times)
-  times_uniq_ind <- c(0, times_uniq_ind)
-  lambda_0 <- rep(NA, length(times_uniq))
-  for (i in 1:length(times_uniq)) {
-    lambda_0[i] <- sum(1/S_RR_X[(times_uniq_ind[i]+1):times_uniq_ind[i+1]]/
-                         sum(denom[(times_uniq_ind[i]+1):N]))
-  }
-  Lambda_0 <- cumsum(lambda_0)
-  surv_baseline <- exp(-Lambda_0)
-  ans <- list(
-    time = times_uniq,
-    surv = outer(surv_baseline, exp(newdata$Z * beta), "^")
+  linpred <- cbind(1, model$data$x) %*% model$coefficients[, 2]
+  exp_resid <- model$data$y * exp(-linpred)
+  exp_resid_L <- exp(log(data[[L]]) - linpred)
+  exp_resid_surv <- survival::survfit(
+    survival::Surv(exp_resid_L, exp_resid, model$data$d) ~ 1,
+    se.fit = FALSE
   )
-  return (ans)
+
+  varnames <- dimnames(model$coefficients)[[1]][-1]
+  Xmat <- as.matrix(newdata[, varnames, drop = FALSE])
+  linpred_new <- as.vector(cbind(1, Xmat) %*% model$coefficients[, 2])
+  exp_nlp <- exp(-linpred_new)
+  tau_scaled <- tau * exp_nlp
+  pred <- vapply(seq_len(nrow(newdata)), function(i) {
+    keep <- exp_resid_surv$time < tau_scaled[i]
+    times <- c(0, exp_resid_surv$time[keep], tau_scaled[i])
+    surv_probs <- c(1, exp_resid_surv$surv[keep])
+    sum(diff(times) * surv_probs)
+  }, numeric(1))
+  pred / exp_nlp
 }
 
-predict_rmst_seqTrun <- function(cox_model, tau = NA, data, newdata) {
-  surv_curve <- survfit.seqTrun(cox_model, data, newdata)
-  if (!is.na(tau)) {
-    times <- c(0, surv_curve$time[surv_curve$time < tau], tau)
-    surv_probs <- rbind(1, surv_curve$surv[surv_curve$time < tau,])
-  } else {
-    times <- c(0, surv_curve$time)
-    surv_probs <- rbind(1, surv_curve$surv[-nrow(surv_curve$surv),])
+predict_rmst_ltrcforest <- function(object, newdata, tau,
+                                    start_col = "L", stop_col = "X",
+                                    status_col = "delta") {
+  time_points <- seq(0, tau, length.out = 50)
+  x_var <- names(object$xvar)
+  newdata <- add_ltrcforest_dummy(newdata, x_var)
+  nd <- newdata[, x_var, drop = FALSE]
+  nd[[start_col]] <- 0
+  nd[[stop_col]] <- tau
+  nd[[status_col]] <- 1
+
+  pred <- LTRCforests::predictProb(
+    object = object, newdata = nd, time.eval = time_points
+  )
+  survival <- forest_survival_matrix(
+    pred$survival.probs, nrow(newdata), length(pred$survival.times)
+  )
+  interval_length <- diff(pred$survival.times)
+  colSums(survival[-nrow(survival), , drop = FALSE] * interval_length)
+}
+
+predict_surv_at_times_ltrcforest <- function(object, newdata, times,
+                                             start_col, stop_col, status_col,
+                                             start_value = 0) {
+  times <- as.numeric(times)
+  times_eval <- sort(unique(times))
+  x_var <- names(object$xvar)
+  newdata <- add_ltrcforest_dummy(newdata, x_var)
+  nd <- newdata[, x_var, drop = FALSE]
+  nd[[start_col]] <- start_value
+  nd[[stop_col]] <- max(times_eval)
+  nd[[status_col]] <- 1
+
+  pred <- LTRCforests::predictProb(
+    object = object, newdata = nd, time.eval = times_eval
+  )
+  survival <- forest_survival_matrix(
+    pred$survival.probs, nrow(newdata), length(times_eval)
+  )
+  index <- match(times, times_eval)
+  vapply(seq_len(nrow(newdata)), function(i) survival[index[i], i], numeric(1))
+}
+
+forest_survival_matrix <- function(survival, n_observations, n_times) {
+  if (is.null(dim(survival))) {
+    return(matrix(survival, nrow = n_times, ncol = n_observations))
   }
-  area <- colSums(diff(times) * surv_probs)
-  return (unname(area))
+  survival <- as.matrix(survival)
+  if (nrow(survival) == n_times && ncol(survival) == n_observations) {
+    return(survival)
+  }
+  if (nrow(survival) == n_observations && ncol(survival) == n_times) {
+    return(t(survival))
+  }
+  stop("Unexpected survival-probability dimensions returned by LTRCforests.",
+       call. = FALSE)
 }
 
-predict.aft.semipar.seqTrun <- function(model, data, newdata) {
-  # model fitted by seqTrun.POReg.AFT
-  # prediction by using NPMLE to estimate distribution of log(X)
-  beta_hat <- model$mean[, 1]
-  X_hat <- cbind(1, data$Z1) %*% beta_hat
-  exp_res_logX <- exp(log(data$X) - X_hat)
-  exp_res_logR <- exp(log(data$R) - X_hat)
-  exp_res_logRR <- exp(log(data$RR) - X_hat)
-  model_npmle <- seqTrunNPMLE_simp(
-    data = cbind(exp_res_logX, exp_res_logR, exp_res_logRR),
-    a = sort(exp_res_logX[,1]),
-    t.a = max(exp_res_logX))
-  # exp_resid_surv <- survfit(Surv(exp_resid) ~ 1, se.fit=F)
-  times <- c(0, sort(exp_res_logX))
-  surv_probs <- 1-model_npmle$`Point estimate`
-  surv_probs <- c(1, surv_probs[-length(surv_probs)])
-  area <- sum(diff(times) * surv_probs)
-  pred <- unname(exp(cbind(1, newdata$Z1) %*% beta_hat)*area)
-  return (pred)
+add_ltrcforest_dummy <- function(data, predictors) {
+  if (".cf_rf_duplicate" %in% predictors &&
+      !".cf_rf_duplicate" %in% names(data)) {
+    source_predictor <- setdiff(predictors, ".cf_rf_duplicate")[1]
+    data$.cf_rf_duplicate <- data[[source_predictor]]
+  }
+  data
 }

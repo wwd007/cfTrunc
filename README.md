@@ -7,10 +7,16 @@
 <!-- badges: end -->
 
 The goal of `cfTrunc` is to generate robust prediction intervals using
-conformal prediction approach for time-to-event data subject to
-truncation with or without censoring. Currently, `cfTrunc` supports
-left, right, and double truncation. More truncation types will be added
-later.
+a conformal prediction approach for time-to-event data subject to
+truncation with or without censoring. The package supports left, right,
+double, and sequential truncation.
+
+For left-truncated RMST prediction, outcome models can be Cox, AFT, or
+random forests. Left-truncation weights can use marginal, reversed-time
+Cox, or random-forest models. Right-censoring weights can use marginal,
+Cox, or random-forest models. These choices can be combined modularly.
+Right, double, and sequential truncation currently support uncensored
+MST prediction with Cox or AFT outcome models.
 
 ## Installation
 
@@ -36,34 +42,31 @@ library(cfTrunc)
 set.seed(42)
 N <- 1000
 Z <- runif(N)
-X <- exp(Z)
+T <- exp(Z)
 C <- rexp(N)
 L <- rgamma(N, 0.25, 0.25)
-dat <- data.frame(X, Z, C, L)
-dat$delta <- as.integer(dat$X > dat$C)
-dat$X <- pmin(dat$X, dat$C)
+dat <- data.frame(X = pmin(T, C), Z, C, L)
+dat$delta <- as.integer(T <= C)
 dat <- dat[dat$L < dat$X, ]
 dat_tr <- dat[1:(nrow(dat) %/% 2), ]
 dat_ca <- dat[(nrow(dat) %/% 2 + 1):nrow(dat), ]
 tau <- quantile(c(dat_tr$X), 0.9)
 
 N_te <- 500
-Z <- runif(N_te)
-X <- exp(Z)
-C <- rexp(N_te)
-L <- rgamma(N_te, 1, 1)
-dat_te <- data.frame(X, Z, C, L)
-dat_te$delta <- as.integer(dat_te$X > dat_te$C)
+Z_te <- runif(N_te)
+T_te <- exp(Z_te)
+dat_te <- data.frame(Z = Z_te)
 
 # conformal prediction
 pred <- conformal_pred(dat_tr, dat_ca, dat_te,
                        X = "X", Z = c("Z"), L = "L", delta = "delta",
-                       trunc_type = "left", target = "RMST",
-                       tau = tau, model = "aft", alpha = 0.1)
+                       trunc_type = "left", censoring = "right",
+                       target = "RMST", tau = tau,
+                       outcome_model = "aft", alpha = 0.1)
 
 # calculate coverage
-coverage <- mean(pred$y_pred_hi > pmin(dat_te$X, tau) &
-                   pred$y_pred_lo < pmin(dat_te$X, tau))
+coverage <- mean(pred$y_pred_hi > pmin(T_te, tau) &
+                   pred$y_pred_lo < pmin(T_te, tau))
 print(paste0("The coverage rate is ", coverage*100, "%."))
 ```
 
