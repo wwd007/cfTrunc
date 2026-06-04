@@ -40,11 +40,11 @@ library(cfTrunc)
 
 # generate data
 set.seed(42)
-N <- 1000
-Z <- runif(N)
-T <- exp(Z)
-C <- rexp(N)
-L <- rgamma(N, 0.25, 0.25)
+N <- 1500
+Z <- runif(N, -1, 1)
+T <- exp(0.2 + 0.5 * Z + rnorm(N, sd = 0.25))
+C <- rexp(N, rate = 0.1)
+L <- runif(N, 0, 0.5)
 dat <- data.frame(X = pmin(T, C), Z, C, L)
 dat$delta <- as.integer(T <= C)
 dat <- dat[dat$L < dat$X, ]
@@ -53,8 +53,8 @@ dat_ca <- dat[(nrow(dat) %/% 2 + 1):nrow(dat), ]
 tau <- quantile(c(dat_tr$X), 0.9)
 
 N_te <- 500
-Z_te <- runif(N_te)
-T_te <- exp(Z_te)
+Z_te <- runif(N_te, -1, 1)
+T_te <- exp(0.2 + 0.5 * Z_te + rnorm(N_te, sd = 0.25))
 dat_te <- data.frame(Z = Z_te)
 
 # conformal prediction
