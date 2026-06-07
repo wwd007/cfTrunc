@@ -33,9 +33,16 @@
 #' @param eps Lower bound applied to estimated inclusion and censoring
 #'   probabilities.
 #' @param alpha Prespecified uncertainty level.
+#' @param return_main_model Logical; if \code{TRUE}, return the fitted outcome
+#'   model used for the main prediction.
+#' @param return_Zbhat Logical; if \code{TRUE}, return the test-set linear
+#'   predictor from the fitted outcome model.
 #'
-#' @return A data frame with columns \code{y_pred}, \code{y_pred_hi}, and
-#'   \code{y_pred_lo}.
+#' @return By default, a data frame with columns \code{y_pred},
+#'   \code{y_pred_hi}, and \code{y_pred_lo}. If \code{return_main_model} or
+#'   \code{return_Zbhat} is \code{TRUE}, a list with element
+#'   \code{prediction} containing that data frame plus the requested optional
+#'   elements.
 #' @importFrom survival Surv
 #' @export
 #'
@@ -78,7 +85,9 @@ conformal_pred <- function(data_tr, data_ca, data_te,
                            mtry = NULL,
                            ntree = 100L,
                            eps = 1e-3,
-                           alpha = 0.1) {
+                           alpha = 0.1,
+                           return_main_model = FALSE,
+                           return_Zbhat = FALSE) {
   trunc_type <- match_choice(trunc_type, c("left", "right", "double", "seq"),
                              "trunc_type")
   censoring <- match_choice(censoring, c("right", "none"), "censoring")
@@ -95,6 +104,12 @@ conformal_pred <- function(data_tr, data_ca, data_te,
   )
   validate_scalar_probability(alpha, "alpha")
   validate_scalar_probability(eps, "eps")
+  validate_scalar_logical(return_main_model, "return_main_model")
+  validate_scalar_logical(return_Zbhat, "return_Zbhat")
+  if (return_Zbhat && outcome_model == "rf") {
+    stop("Zbhat is not available for random-forest outcome models.",
+         call. = FALSE)
+  }
 
   if (is.null(mtry)) {
     mtry <- min(4L, length(Z))
@@ -116,7 +131,9 @@ conformal_pred <- function(data_tr, data_ca, data_te,
       truncation_model = truncation_model,
       censoring_model = censoring_model,
       b0 = b0, seed = seed, mtry = mtry, ntree = ntree,
-      eps = eps, alpha = alpha
+      eps = eps, alpha = alpha,
+      return_main_model = return_main_model,
+      return_Zbhat = return_Zbhat
     ))
   }
 
@@ -128,18 +145,24 @@ conformal_pred <- function(data_tr, data_ca, data_te,
   if (trunc_type == "right") {
     return(conformal_pred_right(
       data_tr, data_ca, data_te, X = X, Z = Z, R = R,
-      outcome_model = outcome_model, eps = eps, alpha = alpha
+      outcome_model = outcome_model, eps = eps, alpha = alpha,
+      return_main_model = return_main_model,
+      return_Zbhat = return_Zbhat
     ))
   }
   if (trunc_type == "double") {
     return(conformal_pred_double(
       data_tr, data_ca, data_te, X = X, Z = Z, L = L, R = R,
-      outcome_model = outcome_model, alpha = alpha
+      outcome_model = outcome_model, alpha = alpha,
+      return_main_model = return_main_model,
+      return_Zbhat = return_Zbhat
     ))
   }
   conformal_pred_seq(
     data_tr, data_ca, data_te, X = X, Z = Z, R = R, Rp = Rp,
-    outcome_model = outcome_model, eps = eps, alpha = alpha
+    outcome_model = outcome_model, eps = eps, alpha = alpha,
+    return_main_model = return_main_model,
+    return_Zbhat = return_Zbhat
   )
 }
 
@@ -182,7 +205,8 @@ conformal_pred_left <- function(data_tr, data_ca, data_te,
                                 X, Z, L, delta, censoring, tau,
                                 outcome_model, truncation_model,
                                 censoring_model, b0, seed, mtry, ntree,
-                                eps, alpha) {
+                                eps, alpha, return_main_model,
+                                return_Zbhat) {
   require_columns(data_tr, c(X, Z, L), "data_tr")
   require_columns(data_ca, c(X, Z, L), "data_ca")
   require_columns(data_te, Z, "data_te")
@@ -239,11 +263,15 @@ conformal_pred_left <- function(data_tr, data_ca, data_te,
     1 / S_cens_tau * (data_ca[[X]] > tau)
   weights <- censoring_weight / H_ca
   scores <- abs(pmin(data_ca[[X]], tau) - mu_ca)
-  prediction_interval(mu_te, scores, weights, alpha)
+  interval <- prediction_interval(mu_te, scores, weights, alpha)
+  conformal_result(
+    interval, outcome_fit, data_te, Z, return_main_model, return_Zbhat
+  )
 }
 
 conformal_pred_right <- function(data_tr, data_ca, data_te,
-                                 X, Z, R, outcome_model, eps, alpha) {
+                                 X, Z, R, outcome_model, eps, alpha,
+                                 return_main_model, return_Zbhat) {
   require_columns(data_tr, c(X, Z, R), "data_tr")
   require_columns(data_ca, c(X, Z, R), "data_ca")
   require_columns(data_te, Z, "data_te")
@@ -289,11 +317,15 @@ conformal_pred_right <- function(data_tr, data_ca, data_te,
   }
 
   scores <- abs(data_ca[[X]] - mu_ca)
-  prediction_interval(mu_te, scores, 1 / H_ca, alpha)
+  interval <- prediction_interval(mu_te, scores, 1 / H_ca, alpha)
+  conformal_result(
+    interval, outcome_fit, data_te, Z, return_main_model, return_Zbhat
+  )
 }
 
 conformal_pred_double <- function(data_tr, data_ca, data_te,
-                                  X, Z, L, R, outcome_model, alpha) {
+                                  X, Z, L, R, outcome_model, alpha,
+                                  return_main_model, return_Zbhat) {
   require_columns(data_tr, c(X, Z, L, R), "data_tr")
   require_columns(data_ca, c(X, Z, L, R), "data_ca")
   require_columns(data_te, Z, "data_te")
@@ -321,7 +353,10 @@ conformal_pred_double <- function(data_tr, data_ca, data_te,
   }
 
   scores <- abs(data_ca[[X]] - mu_ca)
-  prediction_interval(mu_te, scores, 1 / npmle_ca$P.K, alpha)
+  interval <- prediction_interval(mu_te, scores, 1 / npmle_ca$P.K, alpha)
+  conformal_result(
+    interval, outcome_fit, data_te, Z, return_main_model, return_Zbhat
+  )
 }
 
 prediction_interval <- function(prediction, scores, weights, alpha) {

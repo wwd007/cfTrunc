@@ -26,7 +26,9 @@ conformal_pred(
   mtry = NULL,
   ntree = 100L,
   eps = 0.001,
-  alpha = 0.1
+  alpha = 0.1,
+  return_main_model = FALSE,
+  return_Zbhat = FALSE
 )
 }
 \arguments{
@@ -84,10 +86,19 @@ smaller of four and the number of covariates.}
 probabilities.}
 
 \item{alpha}{Prespecified uncertainty level.}
+
+\item{return_main_model}{Logical; if \code{TRUE}, return the fitted outcome
+model used for the main prediction.}
+
+\item{return_Zbhat}{Logical; if \code{TRUE}, return the test-set linear
+predictor from the fitted outcome model.}
 }
 \value{
-A data frame with columns \code{y_pred}, \code{y_pred_hi}, and
-  \code{y_pred_lo}.
+By default, a data frame with columns \code{y_pred},
+  \code{y_pred_hi}, and \code{y_pred_lo}. If \code{return_main_model} or
+  \code{return_Zbhat} is \code{TRUE}, a list with element
+  \code{prediction} containing that data frame plus the requested optional
+  elements.
 }
 \description{
 Conformal prediction for truncated time-to-event data

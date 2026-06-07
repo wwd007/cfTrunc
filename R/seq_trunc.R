@@ -100,7 +100,8 @@ predict_seq_trunc_aft_mst <- function(object, data_tr, newdata, X, Z, R, Rp) {
 }
 
 conformal_pred_seq <- function(data_tr, data_ca, data_te,
-                               X, Z, R, Rp, outcome_model, eps, alpha) {
+                               X, Z, R, Rp, outcome_model, eps, alpha,
+                               return_main_model, return_Zbhat) {
   require_columns(data_tr, c(X, Z, R, Rp), "data_tr")
   require_columns(data_ca, c(X, Z, R, Rp), "data_ca")
   require_columns(data_te, Z, "data_te")
@@ -119,5 +120,8 @@ conformal_pred_seq <- function(data_tr, data_ca, data_te,
 
   H_ca <- clamp_probability(seq_trunc_second_survival(data_tr, R, Rp, data_ca[[R]]), eps)
   scores <- abs(data_ca[[X]] - mu_ca)
-  prediction_interval(mu_te, scores, 1 / H_ca, alpha)
+  interval <- prediction_interval(mu_te, scores, 1 / H_ca, alpha)
+  conformal_result(
+    interval, outcome_fit, data_te, Z, return_main_model, return_Zbhat
+  )
 }
